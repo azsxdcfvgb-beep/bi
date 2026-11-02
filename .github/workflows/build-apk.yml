@@ -10,48 +10,83 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+      - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
-      - name: Install SDK packages
+      - name: Install SDK
         run: |
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
           yes | sdkmanager --licenses || true
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Unzip project
+      - name: Unzip and fix
         id: unzip
         run: |
-          if [ -f YouBili-Android-fixed.zip ]; then
-            ZIP=YouBili-Android-fixed.zip
-          else
-            ZIP=YouBili-Android-mobile-cloud-build.zip
-          fi
-          echo "使用: $ZIP"
-          unzip -q "$ZIP" -d extracted
-          if [ -f extracted/YouBili-Android/settings.gradle.kts ]; then
-            echo "dir=extracted/YouBili-Android" >> $GITHUB_OUTPUT
-          else
-            echo "dir=extracted" >> $GITHUB_OUTPUT
-          fi
-          ls -la extracted/YouBili-Android/ || ls -la extracted/
+          unzip -q YouBili-Android-mobile-cloud-build.zip -d extracted
+          DIR=extracted/YouBili-Android
+          echo "dir=$DIR" >> $GITHUB_OUTPUT
 
-      - name: Build debug APK
+          # 修复 build.gradle.kts（JVM 17）
+          cat > "$DIR/app/build.gradle.kts" << 'ENDOFFILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+          android {
+              namespace = "com.youbili.app"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.youbili.app"
+                  minSdk = 23
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "0.1.0"
+              }
+              buildFeatures { compose = true }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+              implementation("androidx.activity:activity-compose:1.10.0")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material:1.7.6")
+              implementation("androidx.compose.material:material-icons-extended")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+              implementation("io.coil-kt:coil-compose:2.7.0")
+              implementation("androidx.webkit:webkit:1.12.1")
+              debugImplementation("androidx.compose.ui:ui-tooling")
+          }
+          ENDOFFILE
+
+          # 修复 ExperimentalFoundationApi
+          MAIN="$DIR/app/src/main/java/com/youbili/app/MainActivity.kt"
+          sed -i 's/import androidx.compose.foundation.combinedClickable/import androidx.compose.foundation.ExperimentalFoundationApi\nimport androidx.compose.foundation.combinedClickable/' "$MAIN"
+          sed -i 's/@OptIn(ExperimentalMaterialApi::class)/@OptIn(ExperimentalMaterialApi::class, ExperimentalFoundationApi::class)/' "$MAIN"
+
+          echo "修复完成"
+          head -20 "$DIR/app/build.gradle.kts"
+
+      - name: Build
         working-directory: ${{ steps.unzip.outputs.dir }}
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
